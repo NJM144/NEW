@@ -1,22 +1,41 @@
-# ---- build front
-FROM node:18-alpine AS build
+# ---------- Build stage ----------
+FROM node:22-bookworm-slim AS build
+ENV NODE_ENV=production
 WORKDIR /app
+
+# Avoid interactive prompts
+ENV CI=true
+# Optional: faster, quieter npm
+ENV npm_config_update_notifier=false
+
+# Install minimal build tools for native deps (if any)
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
+
+# 1) Install deps from lockfile
 COPY package*.json ./
-RUN npm ci
+RUN npm ci --include=dev
+
+# 2) Build your app (Vite/Next/React/etc.)
 COPY . .
-# Neutralize API base at build; we proxy /api from Nginx so front will call same-origin
-ARG VITE_AGRO_API=
-ENV VITE_AGRO_API=$VITE_AGRO_API
+# If your build script is "build", this works; otherwise adjust
 RUN npm run build
 
-# ---- nginx runtime
-FROM nginx:alpine
-# Copy nginx config
+# ---------- Runtime (nginx) ----------
+FROM nginx:alpine AS runtime
+# SPA routing + API proxy config
 COPY nginx.conf /etc/nginx/conf.d/default.conf
-# Copy built assets
+
+# Copy the static build output.
+# - For Vite/React:   /app/dist
+# - For Next.js:      /app/.next/static + a different nginx setup
+# Change path below to match your project output folder.
 COPY --from=build /app/dist /usr/share/nginx/html
-# Railway injects $PORT; default to 8080 locally
-ENV PORT=8080
-EXPOSE 8080
-# Replace placeholder with $PORT and start nginx
-CMD sh -c "sed -i \"s/PORT_PLACEHOLDER/${PORT}/g\" /etc/nginx/conf.d/default.conf && nginx -g 'daemon off;'"
+
+# If you inject a runtime config file, place it here (optional).
+# COPY --from=build /app/runtime-config.js /usr/share/nginx/html/
+
+EXPOSE 80
+CMD ["nginx", "-g", "daemon off;"]
+
